@@ -1,0 +1,125 @@
+# nvr stack - single
+version: '3'
+
+x-logging: &logging
+  options:
+    max-size: '100'
+    max-file: '5'
+  driver: json-file
+
+# TODO: add onvif2mqtt for shinobi events
+# TODO: add vaapi device (/dev/dri) to each container
+
+services:
+  # live555 creates a single RTSP connection to the ip cameras
+  # to prevent multiple connections to the camera slowing down the network
+  camproxy:
+    logging: *logging
+    image: paradisi/live555-proxy-server
+    container_name: camproxy
+    restart: unless-stopped
+    command: 
+      - "-v"
+      # passwords expunged 
+      - rtsp://<redacted>:<redacted>@192.168.1.120:554/Streaming/Channels/101
+      - rtsp://<redacted>:<redacted>@192.168.1.121:8554/unicast
+      - rtsp://<redacted>:<redacted>@192.168.1.127:554/Streaming/Channels/101
+      - rtsp://<redacted>:<redacted>@192.168.1.128:8554/unicast
+      - rtsp://<redacted>:<redacted>@192.168.1.136:554/Streaming/Channels/101
+    
+  # shinobi
+  # notes:
+  # - shinobi ui is nonsense, but it seems to be the best of the options in here
+  shinobi:
+    logging: *logging
+    image: shinobisystems/shinobi:dev
+    ports: 
+      - '8800:8080/tcp'
+    restart: unless-stopped
+    volumes:
+      # shm tmpfs mount for containerized processing pipelines
+      - /dev/shm/shinobi:/dev/shm/streams:rw
+      # config and database mounts
+      - shinobi_config:/config
+      - shinobi_data:/home/Shinobi:rw
+      - shinobi_db:/var/lib/mysql:rw
+      # video storage
+      - /mnt/volume0/nvr:/home/Shinobi/videos:rw
+      # sync time with local host
+      - /etc/localtime:/etc/localtime:ro
+    labels:
+      - "homer.enable=true"
+      - "homer.service=Home Assistant"
+      - "homer.name=Shinobi"
+      - "homer.subtitle=Shinobi CCTV NVR"
+      - "homer.icon=far fa-edit"
+      - "homer.url=:8800"
+    deploy:
+      replicas: 0
+  
+  # motioneye
+  # notes:
+  # - works very well, and is simple
+  # - high cpu usage without any extras enabled... hm.
+  # - no timeline viewer
+  # - maybe try vaapi for decoding? not sure why it's decoding just to write, maybe streaming?
+  # - motioneye doesn't have timeline view, so external triggered recording probably not great
+  motioneye:
+    logging: *logging
+    image: ccrisan/motioneye:master-amd64
+    restart: unless-stopped
+    ports:
+      # - "8800:8081"
+      - "8765:8765/tcp" 
+    volumes:
+      - motioneye_data:/etc/motioneye
+      - /mnt/volume0/nvr:/var/lib/motioneye
+    labels:
+      - "homer.enable=true"
+      - "homer.service=Home Assistant"
+      - "homer.name=MotionEye"
+      - "homer.subtitle=MotionEye CCTV NVR"
+      - "homer.icon=far fa-edit"
+      - "homer.url=:8765"
+    deploy:
+      replicas: 0
+  
+  # zoneminder
+  # notes:
+  # - zoneminder uses a lot of CPU, but this might be due to the motion detection
+  # -- potentially investigate using the camera motion detection + onvif / mqtt events
+  # - web stream is fast, but it's jpeg stream, so a bit weird.
+  # - very high cpu usage, even with modetect disabled :|
+  # - try with cpu acceleration? still confusing
+  zoneminder:
+    logging: *logging
+    image: bkjaya1952/zoneminder-master-docker-latest # TODO: find a better container, this one is old
+    restart: unless-stopped
+    ports:
+      - "8800:80"
+    volumes:
+      - /mnt/volume0/nvr:/media # ???
+      - zoneminder_data:/var/lib/zoneminder # ???
+    environment:
+      - "TZ=Etc/UCT"
+    labels:
+      - "homer.enable=true"
+      - "homer.service=Home Assistant"
+      - "homer.name=ZoneMinder"
+      - "homer.subtitle=ZoneMinder CCTV NVR"
+      - "homer.icon=far fa-edit"
+      - "homer.url=:8800"
+    deploy:
+      replicas: 0
+
+volumes:
+  shinobi_data:
+    external: true
+  shinobi_config:
+    external: true
+  shinobi_db:
+    external: true
+  motioneye_data:
+    external: true
+  zoneminder_data:
+    external: true

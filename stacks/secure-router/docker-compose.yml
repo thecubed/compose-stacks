@@ -1,0 +1,102 @@
+# secure-router stack
+version: '3'
+
+x-logging: &logging
+  options:
+    max-size: '100m'
+    max-file: '5'
+  driver: json-file
+
+# The idea potentially here is that we expose only Traefik to the internet and it handles routing to all
+# services securely (and with audit logs)
+
+services:
+  traefik:
+    logging: *logging
+    restart: unless-stopped
+    container_name: traefik
+    image: traefik:latest
+    command: 
+      - "--providers.docker"
+      - "--api.insecure=true"
+      - "--entryPoints.traefik.address=:9000/tcp"
+      - "--entryPoints.web.address=:8080/tcp"
+    ports:
+      - "8080:8080"
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels:
+      - "homer.enable=true"
+      - "homer.service=System"
+      - "homer.name=Traefik"
+      - "homer.subtitle=Traefik Dashboard"
+      - "homer.icon=fas fa-stream"
+      - "homer.url=http://hostname:9000"
+      # - "homer.priority=2"
+
+  # traefik-forward-auth:
+  #   logging: *logging
+  #   restart: unless-stopped
+  #   image: thomseddon/traefik-forward-auth:2
+  #   environment:
+  #     - PROVIDERS_GOOGLE_CLIENT_ID=your-client-id
+  #     - PROVIDERS_GOOGLE_CLIENT_SECRET=your-client-secret
+  #     - SECRET=something-random
+  #     - INSECURE_COOKIE=true # Example assumes no https, do not use in production
+  #   labels:
+  #     - "traefik.http.middlewares.traefik-forward-auth.forwardauth.address=http://traefik-forward-auth:4181"
+  #     - "traefik.http.middlewares.traefik-forward-auth.forwardauth.authResponseHeaders=X-Forwarded-User"
+  #     - "traefik.http.services.traefik-forward-auth.loadbalancer.server.port=4181"
+      
+  # dex:
+  #   restart: unless-stopped
+  #   container_name: dex
+  #   image: dex
+  #   ports:
+  #     - ...
+  #   volumes:
+  #     - dex_data:/config
+  
+  homer:
+    # No port exposed either
+    logging: *logging
+    restart: unless-stopped
+    image: b4bz/homer
+    volumes:
+      - homer_data:/www/assets
+    container_name: homer
+    labels:
+      - "traefik.http.routers.homer.rule=PathPrefix(`/`)"
+      - "traefik.http.services.homer.loadbalancer.server.port=8080"
+  
+  homer-service-discovery:
+    logging: *logging
+    restart: unless-stopped
+    image: homer-service-discovery:1
+    environment:
+      HOMER_BASE_CONFIG: /config/base.yml
+      HOMER_CONFIG: /config/config.yml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - homer_data:/config
+  
+  whoami:
+    # Same here. No port exposed
+    logging: *logging
+    restart: unless-stopped
+    image: containous/whoami
+    labels:
+      - "traefik.http.routers.whoami.rule=Path(`/whoami`)"
+      # - "traefik.http.routers.whoami.middlewares=traefik-forward-auth"
+      - "homer.enable=true"
+      - "homer.service=System"
+      - "homer.name=Whoami"
+      - "homer.subtitle=Whoami HTTP Echo Server"
+      - "homer.icon=fas fa-redo"
+      - "homer.url=/whoami"
+      # - "homer.priority=2"
+      
+volumes:
+  homer_data:
+    external: true

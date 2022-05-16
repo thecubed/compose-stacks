@@ -1,0 +1,161 @@
+# home-assistant stack
+version: '3'
+
+x-logging: &logging
+  options:
+    max-size: '100m'
+    max-file: '5'
+  driver: json-file
+
+services:
+  # home assistant!
+  homeassistant:
+    logging: *logging
+    container_name: homeassistant
+    image: homeassistant/home-assistant:stable
+    network_mode: host
+    # needed for bluetooth
+    privileged: true
+    volumes:
+      - homeassistant_data:/config
+      - /etc/localtime:/etc/localtime:ro
+      - /mnt/storage0/media:/media
+      # to expose the usb bus - everything is read only 
+      - /dev:/dev:ro
+    device_cgroup_rules:
+      # This actually exposes select devices to home assistant
+      # credit: the home-assistant OS guys - supervisor is amazing!
+      # ttyAMA / ttySAC
+      - "c 204:* rwm"
+      # ttyUSB
+      - "c 188:* rwm"
+      # ttyACM
+      - "c 166:* rwm"
+      # /dev/bus/usb
+      - "c 189:* rwm"
+    restart: unless-stopped
+    # ports:
+    #   - '8123:8123'
+    
+  # zwavejs server
+  zwave:
+    logging: *logging
+    container_name: zwavejs2mqtt
+    image: zwavejs/zwavejs2mqtt:dev***
+    restart: always
+    tty: true
+    stop_signal: SIGINT
+    volumes:
+      - zwavejs2mqtt_data:/usr/src/app/store
+      - /dev:/dev:ro
+    device_cgroup_rules:
+      # ttyAMA / ttySAC
+      - "c 204:* rwm"
+      # ttyUSB
+      - "c 188:* rwm"
+      # ttyACM
+      - "c 166:* rwm"
+      # /dev/bus/usb
+      - "c 189:* rwm"
+    ports:
+      - '8091:8091' # port for web interface
+      #- '3000:3000' # port for zwave-js websocket server, not exposed to lan
+    restart: unless-stopped
+    
+  # mosquitto mqtt broker
+  mosquitto:
+    logging: *logging
+    container_name: mosquitto
+    image: eclipse-mosquitto:latest
+    ports:
+      - 1883:1883
+    networks:
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - mosquitto_data:/mosquitto
+    restart: unless-stopped
+    
+  # vscode editor for home assistant
+  vscode:
+    # VSCode doesn't get a port mapping, since Traefik will route to it securely
+    logging: *logging
+    restart: unless-stopped
+    image: ghcr.io/hassio-addons/vscode/amd64:c35162d
+    labels:
+      - "traefik.http.routers.vscode.rule=PathPrefix(`/vscode/ha`)"
+      - "traefik.http.middlewares.vscode.stripprefix.prefixes=/vscode/ha"
+      - "traefik.http.routers.vscode.middlewares=vscode@docker"
+      - "traefik.http.services.vscode.loadbalancer.server.port=1337"
+      # - "traefik.http.routers.vscode.middlewares=traefik-forward-auth"
+      - "homer.enable=true"
+      - "homer.service=Home Assistant"
+      - "homer.name=VS Code"
+      - "homer.subtitle=Home Assistant VS Code"
+      - "homer.icon=far fa-edit"
+      - "homer.url=/vscode/ha"
+    volumes:
+      # - homeassistant_data:/homeassistant
+      - vscode_data:/home/coder/
+    environment:
+      HASS_SERVER: "http://homeassistant:8123"
+      HASS_TOKEN: "mytoken123"
+    entrypoint: ["/bin/bash","-c"]
+    # TODO: yeah, this is kinda nuts. build a new docker container with these plugins baked into it plx
+    command: |
+      bash -s <<EOF
+        sudo bash -s <<EOT
+          apt-get update
+          apt-get install -y \
+            colordiff
+            git
+            iputils-ping
+            locales
+            mosquitto-clients
+            net-tools
+            nmap
+            openssh-client
+            openssl
+            python3-dev
+            python3
+            unzip
+            uuid-runtime
+            wget
+            zip
+            zsh
+            curl
+      EOT
+        URL_EXTENSIONS=(
+          "lukas-tr.materialdesignicons-intellisense@4.0.0"
+          "netcorext.uuid-generator@0.0.5"
+          "ESPHome.esphome-vscode@0.22.0"
+        )
+        REPO_EXTENSIONS=(
+          "emilast.LogFileHighlighter"
+          "esbenp.prettier-vscode"
+          "keesschollaart.vscode-home-assistant"
+          "oderwat.indent-rainbow"
+          "redhat.vscode-yaml"
+          "usernamehw.errorlens"
+        )
+        /usr/bin/code-server $(printf ' --install-extension %s' ${PLUGINS[@]})
+        uuid=$(uuidgen -r)
+        for ext in ${URL_EXTENSIONS[@]}; do
+          extention="${ext%%#*}"
+          vendor="${extention%%.*}"
+          slug="${extention#*.}"
+          version="${ext##*@}"
+          file="/tmp/${extention}-${version}.vsix"
+          curl -JL --retry 5 -o "${file}" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36" \
+            -H "x-market-user-id: ${uuid}" \
+            "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/${vendor}/vsextensions/${slug}/${version}/vspackage"
+          /usr/bin/code-server --install-extension "${file}"
+        done
+        /usr/bin/entrypoint.sh --bind-addr 0.0.0.0:8080 .
+      EOF
+
+volumes:
+  homeassistant_data:
+    external: true
+  zwavejs2mqtt_data:
+    external: true
